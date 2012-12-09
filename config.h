@@ -7,7 +7,7 @@
  */
 static char font[] = "Ubuntu Mono:pixelsize=15";
 static int borderpx = 2;
-static char shell[] = "/bin/sh";
+static char shell[] = "/bin/zsh";
 
 /* double-click timeout (in milliseconds) between clicks for selection */
 static unsigned int doubleclicktimeout = 300;
