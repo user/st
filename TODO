@@ -1,7 +1,6 @@
 vt emulation
 ------------
 
-* implement BCE right
 * color definition in CSI
 	* implement CSI parsing
 * wide-character support in conjunction with fallback xft code 
@@ -17,7 +16,6 @@ code & interface
 bugs
 ----
 
-* handle XOpenMI() errors
 * fix shift up/down (shift selection in emacs)
 * fix selection paste for xatom STRING
 * fix umlaut handling in settitle
@@ -26,6 +24,10 @@ bugs
 * remove DEC test sequence when appropriate
 * reverse cursor when drawin light on light background
 	* text should be readable
+* When some application outputting long text is run in the shell init scripts,
+  then this text might be stripped to the standard 80x25 due to st running the
+  virtual terminal at first priority. Maybe the vt initialisation could be
+  moved somewhere after knowing the right window size.
 
 misc
 ----
