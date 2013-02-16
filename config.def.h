@@ -9,9 +9,13 @@ static char font[] = "Liberation Mono:pixelsize=12:antialias=false:autohint=fals
 static int borderpx = 2;
 static char shell[] = "/bin/sh";
 
-/* double-click timeout (in milliseconds) between clicks for selection */
+/* timeouts (in milliseconds) */
 static unsigned int doubleclicktimeout = 300;
 static unsigned int tripleclicktimeout = 600;
+
+/* frames per second st should at maximum draw to the screen */
+static unsigned int xfps = 60;
+static unsigned int actionfps = 30;
 
 /* TERM value */
 static char termname[] = "st-256color";

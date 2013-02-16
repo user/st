@@ -1557,9 +1557,11 @@ tsetmode(bool priv, bool set, int *args, int narg) {
 				break;
 			case 1000: /* 1000,1002: enable xterm mouse report */
 				MODBIT(term.mode, set, MODE_MOUSEBTN);
+				MODBIT(term.mode, 0, MODE_MOUSEMOTION);
 				break;
 			case 1002:
 				MODBIT(term.mode, set, MODE_MOUSEMOTION);
+				MODBIT(term.mode, 0, MODE_MOUSEBTN);
 				break;
 			case 1006:
 				MODBIT(term.mode, set, MODE_MOUSESGR);
@@ -2440,7 +2442,9 @@ xloadfonts(char *fontstr, int fontsize) {
 	xw.cw = dc.font.width;
 	xw.ch = dc.font.height;
 
+	FcPatternDel(pattern, FC_SLANT);
 	FcPatternDel(pattern, FC_WEIGHT);
+	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ROMAN);
 	FcPatternAddInteger(pattern, FC_WEIGHT, FC_WEIGHT_BOLD);
 	if(xloadfont(&dc.bfont, pattern))
 		die("st: can't open font %s\n", fontstr);
@@ -2451,6 +2455,7 @@ xloadfonts(char *fontstr, int fontsize) {
 		die("st: can't open font %s\n", fontstr);
 
 	FcPatternDel(pattern, FC_WEIGHT);
+	FcPatternAddInteger(pattern, FC_WEIGHT, FC_WEIGHT_MEDIUM);
 	if(xloadfont(&dc.ifont, pattern))
 		die("st: can't open font %s\n", fontstr);
 
@@ -2986,6 +2991,11 @@ xseturgency(int add) {
 
 void
 focus(XEvent *ev) {
+	XFocusChangeEvent *e = &ev->xfocus;
+
+	if(e->mode == NotifyGrab)
+		return;
+
 	if(ev->type == FocusIn) {
 		XSetICFocus(xw.xic);
 		xw.state |= WIN_FOCUSED;
@@ -3156,10 +3166,12 @@ void
 run(void) {
 	XEvent ev;
 	fd_set rfd;
-	int xfd = XConnectionNumber(xw.dpy), i;
-	struct timeval drawtimeout, *tv = NULL;
+	int xfd = XConnectionNumber(xw.dpy), xev;
+	struct timeval drawtimeout, *tv = NULL, now, last;
 
-	for(i = 0;; i++) {
+	gettimeofday(&last, NULL);
+
+	for(xev = actionfps;;) {
 		FD_ZERO(&rfd);
 		FD_SET(cmdfd, &rfd);
 		FD_SET(xfd, &rfd);
@@ -3169,35 +3181,36 @@ run(void) {
 			die("select failed: %s\n", SERRNO);
 		}
 
-		/*
-		 * Stop after a certain number of reads so the user does not
-		 * feel like the system is stuttering.
-		 */
-		if(i < 1000 && FD_ISSET(cmdfd, &rfd)) {
+		gettimeofday(&now, NULL);
+		drawtimeout.tv_sec = 0;
+		drawtimeout.tv_usec = (1000/xfps) * 1000;
+		tv = &drawtimeout;
+
+		if(FD_ISSET(cmdfd, &rfd))
 			ttyread();
 
-			/*
-			 * Just wait a bit so it isn't disturbing the
-			 * user and the system is able to write something.
-			 */
-			drawtimeout.tv_sec = 0;
-			drawtimeout.tv_usec = 5;
-			tv = &drawtimeout;
-			continue;
-		}
-		i = 0;
-		tv = NULL;
+		if(FD_ISSET(xfd, &rfd))
+			xev = actionfps;
 
-		while(XPending(xw.dpy)) {
-			XNextEvent(xw.dpy, &ev);
-			if(XFilterEvent(&ev, None))
-				continue;
-			if(handler[ev.type])
-				(handler[ev.type])(&ev);
-		}
+		if(TIMEDIFF(now, last) > \
+				(xev ? (1000/xfps) : (1000/actionfps))) {
+			while(XPending(xw.dpy)) {
+				XNextEvent(xw.dpy, &ev);
+				if(XFilterEvent(&ev, None))
+					continue;
+				if(handler[ev.type])
+					(handler[ev.type])(&ev);
+			}
 
-		draw();
-		XFlush(xw.dpy);
+			draw();
+			XFlush(xw.dpy);
+			last = now;
+
+			if(xev && !FD_ISSET(xfd, &rfd))
+				xev--;
+			if(!FD_ISSET(cmdfd, &rfd) && !FD_ISSET(xfd, &rfd))
+				tv = NULL;
+		}
 	}
 }
 

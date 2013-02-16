@@ -5,13 +5,17 @@
  *
  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
  */
-static char font[] = "Ubuntu Mono:pixelsize=15";
+static char font[] = "Ubuntu Mono:pixelsize=14";
 static int borderpx = 2;
 static char shell[] = "/bin/zsh";
 
-/* double-click timeout (in milliseconds) between clicks for selection */
+/* timeouts (in milliseconds) */
 static unsigned int doubleclicktimeout = 300;
 static unsigned int tripleclicktimeout = 600;
+
+/* frames per second st should at maximum draw to the screen */
+static unsigned int xfps = 60;
+static unsigned int actionfps = 30;
 
 /* TERM value */
 static char termname[] = "st-256color";
