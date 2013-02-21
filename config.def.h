@@ -104,6 +104,12 @@ static Shortcut shortcuts[] = {
  */
 static KeySym mappedkeys[] = { -1 };
 
+/*
+ * Which bits of the state should be ignored. By default the state bit for the
+ * keyboard layout (XK_SWITCH_MOD) is ignored.
+ */
+uint ignoremod = XK_SWITCH_MOD;
+
 /* key, mask, output, keypad, cursor, crlf */
 static Key key[] = {
 	/* keysym             mask         string         keypad cursor crlf */
@@ -297,5 +303,17 @@ static Key key[] = {
 	{ XK_F33,           XK_NO_MOD,      "\033[20;5~",    0,    0,    0},
 	{ XK_F34,           XK_NO_MOD,      "\033[21;5~",    0,    0,    0},
 	{ XK_F35,           XK_NO_MOD,      "\033[23;5~",    0,    0,    0},
+};
+
+/*
+ * Selection types' masks.
+ * Use the same masks as usual.
+ * Button1Mask is always unset, to make masks match between ButtonPress.
+ * ButtonRelease and MotionNotify.
+ * If no match is found, regular selection is used.
+ */
+
+static uint selmasks[] = {
+	[SEL_RECTANGULAR] = Mod1Mask,
 };
 

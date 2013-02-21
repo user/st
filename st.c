@@ -61,6 +61,7 @@
 #define DRAW_BUF_SIZ  20*1024
 #define XK_ANY_MOD    UINT_MAX
 #define XK_NO_MOD     0
+#define XK_SWITCH_MOD (1<<13)
 
 #define REDRAW_TIMEOUT (80*1000) /* 80 ms */
 
@@ -134,6 +135,11 @@ enum window_state {
 	WIN_VISIBLE = 1,
 	WIN_REDRAW  = 2,
 	WIN_FOCUSED = 4
+};
+
+enum selection_type {
+	SEL_REGULAR = 1,
+	SEL_RECTANGULAR = 2
 };
 
 /* bit macro */
@@ -233,6 +239,7 @@ typedef struct {
 /* TODO: use better name for vars... */
 typedef struct {
 	int mode;
+	int type;
 	int bx, by;
 	int ex, ey;
 	struct {
@@ -650,10 +657,23 @@ selected(int x, int y) {
 			|| (y == sel.e.y && x <= sel.e.x))
 			|| (y == sel.b.y && x >= sel.b.x
 				&& (x <= sel.e.x || sel.b.y != sel.e.y));
+	switch(sel.type) {
+	case SEL_REGULAR:
+		return ((sel.b.y < y && y < sel.e.y)
+			|| (y == sel.e.y && x <= sel.e.x))
+			|| (y == sel.b.y && x >= sel.b.x
+				&& (x <= sel.e.x || sel.b.y != sel.e.y));
+	case SEL_RECTANGULAR:
+		return ((sel.b.y <= y && y <= sel.e.y)
+			&& (sel.b.x <= x && x <= sel.e.x));
+	};
 }
 
 void
 getbuttoninfo(XEvent *e) {
+	int type;
+	uint state = e->xbutton.state &~Button1Mask;
+
 	sel.alt = IS_SET(MODE_ALTSCREEN);
 
 	sel.ex = x2col(e->xbutton.x);
@@ -663,6 +683,14 @@ getbuttoninfo(XEvent *e) {
 	sel.b.y = MIN(sel.by, sel.ey);
 	sel.e.x = sel.by < sel.ey ? sel.ex : sel.bx;
 	sel.e.y = MAX(sel.by, sel.ey);
+
+	sel.type = SEL_REGULAR;
+	for(type = 1; type < LEN(selmasks); ++type) {
+		if(match(selmasks[type], state)) {
+			sel.type = type;
+			break;
+		}
+	}
 }
 
 void
@@ -723,6 +751,7 @@ bpress(XEvent *e) {
 			draw();
 		}
 		sel.mode = 1;
+		sel.type = SEL_REGULAR;
 		sel.ex = sel.bx = x2col(e->xbutton.x);
 		sel.ey = sel.by = y2row(e->xbutton.y);
 	} else if(e->xbutton.button == Button4) {
@@ -745,7 +774,8 @@ selcopy(void) {
 		ptr = str = xmalloc(bufsize);
 
 		/* append every set & selected glyph to the selection */
-		for(y = 0; y < term.row; y++) {
+		for(y = sel.b.y; y < sel.e.y + 1; y++) {
+			is_selected = 0;
 			gp = &term.line[y][0];
 			last = gp + term.col;
 
@@ -753,8 +783,11 @@ selcopy(void) {
 				/* nothing */;
 
 			for(x = 0; gp <= last; x++, ++gp) {
-				if(!(is_selected = selected(x, y)))
+				if(!selected(x, y)) {
 					continue;
+				} else {
+					is_selected = 1;
+				}
 
 				p = (gp->state & GLYPH_SET) ? gp->c : " ";
 				size = utf8size(p);
@@ -906,7 +939,7 @@ brelease(XEvent *e) {
 
 void
 bmotion(XEvent *e) {
-	int starty, endy, oldey, oldex;
+	int oldey, oldex;
 
 	if(IS_SET(MODE_MOUSE)) {
 		mousereport(e);
@@ -921,9 +954,7 @@ bmotion(XEvent *e) {
 	getbuttoninfo(e);
 
 	if(oldey != sel.ey || oldex != sel.ex) {
-		starty = MIN(oldey, sel.ey);
-		endy = MAX(oldey, sel.ey);
-		tsetdirt(starty, endy);
+		tsetdirt(sel.b.y, sel.e.y);
 	}
 }
 
@@ -1215,14 +1246,24 @@ selscroll(int orig, int n) {
 			sel.bx = -1;
 			return;
 		}
-		if(sel.by < term.top) {
-			sel.by = term.top;
-			sel.bx = 0;
-		}
-		if(sel.ey > term.bot) {
-			sel.ey = term.bot;
-			sel.ex = term.col;
-		}
+		switch(sel.type) {
+		case SEL_REGULAR:
+			if(sel.by < term.top) {
+				sel.by = term.top;
+				sel.bx = 0;
+			}
+			if(sel.ey > term.bot) {
+				sel.ey = term.bot;
+				sel.ex = term.col;
+			}
+			break;
+		case SEL_RECTANGULAR:
+			if(sel.by < term.top)
+				sel.by = term.top;
+			if(sel.ey > term.bot)
+				sel.ey = term.bot;
+			break;
+		};
 		sel.b.y = sel.by, sel.b.x = sel.bx;
 		sel.e.y = sel.ey, sel.e.x = sel.ex;
 	}
@@ -1661,7 +1702,7 @@ csihandle(void) {
 		tmoveto(0, term.c.y-csiescseq.arg[0]);
 		break;
 	case 'g': /* TBC -- Tabulation clear */
-		switch (csiescseq.arg[0]) {
+		switch(csiescseq.arg[0]) {
 		case 0: /* clear current tab stop */
 			term.tabs[term.c.x] = 0;
 			break;
@@ -1926,7 +1967,7 @@ techo(char *buf, int len) {
 		if(c == '\033') {		/* escape */
 			tputc("^", 1);
 			tputc("[", 1);
-		} else if (c < '\x20') {	/* control code */
+		} else if(c < '\x20') {	/* control code */
 			if(c != '\n' && c != '\r' && c != '\t') {
 				c |= '\x40';
 				tputc("^", 1);
@@ -1936,7 +1977,7 @@ techo(char *buf, int len) {
 			break;
 		}
 	}
-	if (len)
+	if(len)
 		tputc(buf, len);
 }
 
@@ -1946,7 +1987,7 @@ tputc(char *c, int len) {
 	bool control = ascii < '\x20' || ascii == 0177;
 
 	if(iofd != -1) {
-		if (xwrite(iofd, c, len) < 0) {
+		if(xwrite(iofd, c, len) < 0) {
 			fprintf(stderr, "Error writing in %s:%s\n",
 				opt_io, strerror(errno));
 			close(iofd);
@@ -2287,7 +2328,7 @@ xresize(int col, int row) {
 void
 xloadcols(void) {
 	int i, r, g, b;
-	XRenderColor color = { .alpha = 0 };
+	XRenderColor color = { .alpha = 0xffff };
 
 	/* load colors [0-15] colors and [256-LEN(colorname)[ (config.h) */
 	for(i = 0; i < LEN(colorname); i++) {
@@ -2443,20 +2484,18 @@ xloadfonts(char *fontstr, int fontsize) {
 	xw.ch = dc.font.height;
 
 	FcPatternDel(pattern, FC_SLANT);
-	FcPatternDel(pattern, FC_WEIGHT);
-	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ROMAN);
-	FcPatternAddInteger(pattern, FC_WEIGHT, FC_WEIGHT_BOLD);
-	if(xloadfont(&dc.bfont, pattern))
+	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ITALIC);
+	if(xloadfont(&dc.ifont, pattern))
 		die("st: can't open font %s\n", fontstr);
 
-	FcPatternDel(pattern, FC_SLANT);
-	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ITALIC);
+	FcPatternDel(pattern, FC_WEIGHT);
+	FcPatternAddInteger(pattern, FC_WEIGHT, FC_WEIGHT_BOLD);
 	if(xloadfont(&dc.ibfont, pattern))
 		die("st: can't open font %s\n", fontstr);
 
-	FcPatternDel(pattern, FC_WEIGHT);
-	FcPatternAddInteger(pattern, FC_WEIGHT, FC_WEIGHT_MEDIUM);
-	if(xloadfont(&dc.ifont, pattern))
+	FcPatternDel(pattern, FC_SLANT);
+	FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ROMAN);
+	if(xloadfont(&dc.bfont, pattern))
 		die("st: can't open font %s\n", fontstr);
 
 	FcPatternDestroy(pattern);
@@ -2470,8 +2509,8 @@ xunloadfonts(void) {
 	 * Free the loaded fonts in the font cache. This is done backwards
 	 * from the frccur.
 	 */
-	for (i = 0, ip = frccur; i < frclen; i++, ip--) {
-		if (ip < 0)
+	for(i = 0, ip = frccur; i < frclen; i++, ip--) {
+		if(ip < 0)
 			ip = LEN(frc) - 1;
 		XftFontClose(xw.dpy, frc[ip].font);
 	}
@@ -2514,7 +2553,7 @@ xinit(void) {
 	xw.vis = XDefaultVisual(xw.dpy, xw.scr);
 
 	/* font */
-	if (!FcInit())
+	if(!FcInit())
 		die("Could not init fontconfig.\n");
 
 	usedfont = (opt_font == NULL)? font : opt_font;
@@ -2717,7 +2756,7 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 	XftDrawRect(xw.draw, bg, winx, winy, width, xw.ch);
 
 	fcsets[0] = font->set;
-	for (xp = winx; bytelen > 0;) {
+	for(xp = winx; bytelen > 0;) {
 		/*
 		 * Search for the range in the to be printed string of glyphs
 		 * that are in the main font. Then print that range. If
@@ -2727,22 +2766,22 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 		u8fs = s;
 		u8fblen = 0;
 		u8fl = 0;
-		for (;;) {
+		for(;;) {
 			u8c = s;
 			u8cblen = utf8decode(s, &u8char);
 			s += u8cblen;
 			bytelen -= u8cblen;
 
 			doesexist = XftCharIndex(xw.dpy, font->match, u8char);
-			if (!doesexist || bytelen <= 0) {
-				if (bytelen <= 0) {
-					if (doesexist) {
+			if(!doesexist || bytelen <= 0) {
+				if(bytelen <= 0) {
+					if(doesexist) {
 						u8fl++;
 						u8fblen += u8cblen;
 					}
 				}
 
-				if (u8fl > 0) {
+				if(u8fl > 0) {
 					XftDrawStringUtf8(xw.draw, fg,
 							font->match, xp,
 							winy + font->ascent,
@@ -2756,23 +2795,23 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 			u8fl++;
 			u8fblen += u8cblen;
 		}
-		if (doesexist)
+		if(doesexist)
 			break;
 
 		frp = frccur;
 		/* Search the font cache. */
-		for (i = 0; i < frclen; i++, frp--) {
-			if (frp <= 0)
+		for(i = 0; i < frclen; i++, frp--) {
+			if(frp <= 0)
 				frp = LEN(frc) - 1;
 
-			if (frc[frp].c == u8char
+			if(frc[frp].c == u8char
 					&& frc[frp].flags == frcflags) {
 				break;
 			}
 		}
 
 		/* Nothing was found. */
-		if (i >= frclen) {
+		if(i >= frclen) {
 			/*
 			 * Nothing was found in the cache. Now use
 			 * some dozen of Fontconfig calls to get the
@@ -2800,9 +2839,9 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 			 */
 			frccur++;
 			frclen++;
-			if (frccur >= LEN(frc))
+			if(frccur >= LEN(frc))
 				frccur = 0;
-			if (frclen > LEN(frc)) {
+			if(frclen > LEN(frc)) {
 				frclen = LEN(frc);
 				XftFontClose(xw.dpy, frc[frccur].font);
 			}
@@ -3008,6 +3047,8 @@ focus(XEvent *ev) {
 
 inline bool
 match(uint mask, uint state) {
+	state &= ~(ignoremod);
+
 	if(mask == XK_NO_MOD && state)
 		return false;
 	if(mask != XK_ANY_MOD && mask != XK_NO_MOD && !state)
@@ -3082,7 +3123,7 @@ kpress(XEvent *ev) {
 	Status status;
 	Shortcut *bp;
 
-	if (IS_SET(MODE_KBDLOCK))
+	if(IS_SET(MODE_KBDLOCK))
 		return;
 
 	len = XmbLookupString(xw.xic, e, xstr, sizeof(xstr), &ksym, &status);
@@ -3104,7 +3145,7 @@ kpress(XEvent *ev) {
 		if(len == 0)
 			return;
 
-		if (len == 1 && e->state & Mod1Mask)
+		if(len == 1 && e->state & Mod1Mask)
 			*cp++ = '\033';
 
 		memcpy(cp, xstr, len);
