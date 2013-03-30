@@ -62,6 +62,14 @@ static unsigned int defaultbg = 0;
 static unsigned int defaultcs = 256;
 static unsigned int defaultucs = 257;
 
+/*
+ * Colors used, when the specific fg == defaultfg. So in reverse mode this
+ * will reverse too. Another logic would only make the simple feature too
+ * complex.
+ */
+static unsigned int defaultitalic = 11;
+static unsigned int defaultunderline = 7;
+
 /* Internal shortcuts. */
 #define MODKEY Mod1Mask
 
@@ -70,6 +78,7 @@ static Shortcut shortcuts[] = {
 	{ MODKEY|ShiftMask,	XK_Prior,	xzoom,		{.i = +1} },
 	{ MODKEY|ShiftMask,	XK_Next,	xzoom,		{.i = -1} },
 	{ ShiftMask,		XK_Insert,	selpaste,	{.i =  0} },
+	{ MODKEY|ShiftMask,	XK_Insert,	clippaste,	{.i =  0} },
 	{ MODKEY,		XK_Num_Lock,	numlock,	{.i =  0} },
 };
 
@@ -214,7 +223,10 @@ static Key key[] = {
 	{ XK_End,           ShiftMask,      "\033[K",       -1,    0,    0},
 	{ XK_End,           ShiftMask,      "\033[1;2F",    +1,    0,    0},
 	{ XK_End,           XK_ANY_MOD,     "\033[4~",       0,    0,    0},
+	{ XK_Prior,         ControlMask,    "\033[5;5~",     0,    0,    0},
+	{ XK_Prior,         ShiftMask,      "\033[5;2~",     0,    0,    0},
 	{ XK_Prior,         XK_NO_MOD,      "\033[5~",       0,    0,    0},
+	{ XK_Next,          ControlMask,    "\033[6;5~",     0,    0,    0},
 	{ XK_Next,          ShiftMask,      "\033[6;2~",     0,    0,    0},
 	{ XK_Next,          XK_ANY_MOD,     "\033[6~",       0,    0,    0},
 	{ XK_F1,            XK_NO_MOD,      "\033OP" ,       0,    0,    0},

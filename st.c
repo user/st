@@ -1,5 +1,4 @@
 /* See LICENSE for licence details. */
-#define _XOPEN_SOURCE 600
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -25,7 +24,6 @@
 #include <X11/Xutil.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
-#include <X11/extensions/Xdbe.h>
 #include <X11/Xft/Xft.h>
 #include <fontconfig/fontconfig.h>
 
@@ -267,9 +265,10 @@ typedef struct {
 } Shortcut;
 
 /* function definitions used in config.h */
-static void xzoom(const Arg *);
-static void selpaste(const Arg *);
+static void clippaste(const Arg *);
 static void numlock(const Arg *);
+static void selpaste(const Arg *);
+static void xzoom(const Arg *);
 
 /* Config.h for applying patches and the configuration. */
 #include "config.h"
@@ -348,8 +347,10 @@ static void xclear(int, int, int, int);
 static void xdrawcursor(void);
 static void xinit(void);
 static void xloadcols(void);
+static int xsetcolorname(int, const char *);
 static int xloadfont(Font *, FcPattern *);
 static void xloadfonts(char *, int);
+static void xsettitle(char *);
 static void xresettitle(void);
 static void xseturgency(int);
 static void xsetsel(char*);
@@ -421,8 +422,6 @@ static char *opt_title = NULL;
 static char *opt_embed = NULL;
 static char *opt_class = NULL;
 static char *opt_font = NULL;
-
-bool usedbe = False;
 
 static char *usedfont = NULL;
 static int usedfontsize = 0;
@@ -650,23 +649,18 @@ selected(int x, int y) {
 	if(sel.ey == y && sel.by == y) {
 		bx = MIN(sel.bx, sel.ex);
 		ex = MAX(sel.bx, sel.ex);
+
 		return BETWEEN(x, bx, ex);
 	}
 
-	return ((sel.b.y < y && y < sel.e.y)
-			|| (y == sel.e.y && x <= sel.e.x))
-			|| (y == sel.b.y && x >= sel.b.x
-				&& (x <= sel.e.x || sel.b.y != sel.e.y));
-	switch(sel.type) {
-	case SEL_REGULAR:
-		return ((sel.b.y < y && y < sel.e.y)
-			|| (y == sel.e.y && x <= sel.e.x))
-			|| (y == sel.b.y && x >= sel.b.x
-				&& (x <= sel.e.x || sel.b.y != sel.e.y));
-	case SEL_RECTANGULAR:
+	if(sel.type == SEL_RECTANGULAR) {
 		return ((sel.b.y <= y && y <= sel.e.y)
 			&& (sel.b.x <= x && x <= sel.e.x));
-	};
+	}
+	return ((sel.b.y < y && y < sel.e.y)
+		|| (y == sel.e.y && x <= sel.e.x))
+		|| (y == sel.b.y && x >= sel.b.x
+			&& (x <= sel.e.x || sel.b.y != sel.e.y));
 }
 
 void
@@ -796,7 +790,7 @@ selcopy(void) {
 			}
 			/* \n at the end of every selected line except for the last one */
 			if(is_selected && y < sel.e.y)
-				*ptr++ = '\n';
+				*ptr++ = '\r';
 		}
 		*ptr = 0;
 	}
@@ -831,7 +825,17 @@ selpaste(const Arg *dummy) {
 			xw.win, CurrentTime);
 }
 
-void selclear(XEvent *e) {
+void
+clippaste(const Arg *dummy) {
+	Atom clipboard;
+
+	clipboard = XInternAtom(xw.dpy, "CLIPBOARD", 0);
+	XConvertSelection(xw.dpy, clipboard, sel.xtarget, XA_PRIMARY,
+			xw.win, CurrentTime);
+}
+
+void
+selclear(XEvent *e) {
 	if(sel.bx == -1)
 		return;
 	sel.bx = -1;
@@ -939,7 +943,7 @@ brelease(XEvent *e) {
 
 void
 bmotion(XEvent *e) {
-	int oldey, oldex;
+	int oldey, oldex, oldsby, oldsey;
 
 	if(IS_SET(MODE_MOUSE)) {
 		mousereport(e);
@@ -951,10 +955,12 @@ bmotion(XEvent *e) {
 
 	oldey = sel.ey;
 	oldex = sel.ex;
+	oldsby = sel.b.y;
+	oldsey = sel.e.y;
 	getbuttoninfo(e);
 
 	if(oldey != sel.ey || oldex != sel.ex) {
-		tsetdirt(sel.b.y, sel.e.y);
+		tsetdirt(MIN(sel.b.y, oldsby), MAX(sel.e.y, oldsey));
 	}
 }
 
@@ -1246,8 +1252,12 @@ selscroll(int orig, int n) {
 			sel.bx = -1;
 			return;
 		}
-		switch(sel.type) {
-		case SEL_REGULAR:
+		if(sel.type == SEL_RECTANGULAR) {
+			if(sel.by < term.top)
+				sel.by = term.top;
+			if(sel.ey > term.bot)
+				sel.ey = term.bot;
+		} else {
 			if(sel.by < term.top) {
 				sel.by = term.top;
 				sel.bx = 0;
@@ -1256,14 +1266,7 @@ selscroll(int orig, int n) {
 				sel.ey = term.bot;
 				sel.ex = term.col;
 			}
-			break;
-		case SEL_RECTANGULAR:
-			if(sel.by < term.top)
-				sel.by = term.top;
-			if(sel.ey > term.bot)
-				sel.ey = term.bot;
-			break;
-		};
+		}
 		sel.b.y = sel.by, sel.b.x = sel.bx;
 		sel.e.y = sel.ey, sel.e.x = sel.ex;
 	}
@@ -1283,27 +1286,30 @@ tnewline(int first_col) {
 
 void
 csiparse(void) {
-	/* int noarg = 1; */
-	char *p = csiescseq.buf;
+	char *p = csiescseq.buf, *np;
+	long int v;
 
 	csiescseq.narg = 0;
-	if(*p == '?')
-		csiescseq.priv = 1, p++;
-
-	while(p < csiescseq.buf+csiescseq.len) {
-		while(isdigit(*p)) {
-			csiescseq.arg[csiescseq.narg] *= 10;
-			csiescseq.arg[csiescseq.narg] += *p++ - '0'/*, noarg = 0 */;
-		}
-		if(*p == ';' && csiescseq.narg+1 < ESC_ARG_SIZ) {
-			csiescseq.narg++, p++;
-		} else {
-			csiescseq.mode = *p;
-			csiescseq.narg++;
-
-			return;
-		}
+	if(*p == '?') {
+		csiescseq.priv = 1;
+		p++;
 	}
+
+	csiescseq.buf[csiescseq.len] = '\0';
+	while(p < csiescseq.buf+csiescseq.len) {
+		np = NULL;
+		v = strtol(p, &np, 10);
+		if(np == p)
+			v = 0;
+		if(v == LONG_MAX || v == LONG_MIN)
+			v = -1;
+		csiescseq.arg[csiescseq.narg++] = v;
+		p = np;
+		if(*p != ';' || csiescseq.narg == ESC_ARG_SIZ)
+			break;
+		p++;
+	}
+	csiescseq.mode = *p;
 }
 
 /* for absolute user moves, when decom is set */
@@ -1857,32 +1863,37 @@ csireset(void) {
 
 void
 strhandle(void) {
-	char *p;
+	char *p = NULL;
+	int i, j, narg;
 
-	/*
-	 * TODO: make this being useful in case of color palette change.
-	 */
 	strparse();
-
-	p = strescseq.buf;
+	narg = strescseq.narg;
 
 	switch(strescseq.type) {
 	case ']': /* OSC -- Operating System Command */
-		switch(p[0]) {
-		case '0':
-		case '1':
-		case '2':
-			/*
-			 * TODO: Handle special chars in string, like umlauts.
-			 */
-			if(p[1] == ';') {
-				XStoreName(xw.dpy, xw.win, strescseq.buf+2);
+		switch(i = atoi(strescseq.args[0])) {
+		case 0:
+		case 1:
+		case 2:
+			if(narg > 1)
+				xsettitle(strescseq.args[1]);
+			break;
+		case 4: /* color set */
+			if(narg < 3)
+				break;
+			p = strescseq.args[2];
+			/* fall through */
+		case 104: /* color reset, here p = NULL */
+			j = (narg > 1) ? atoi(strescseq.args[1]) : -1;
+			if (!xsetcolorname(j, p)) {
+				fprintf(stderr, "erresc: invalid color %s\n", p);
+			} else {
+				/*
+				 * TODO if defaultbg color is changed, borders
+				 * are dirty
+				 */
+				redraw(0);
 			}
-			break;
-		case ';':
-			XStoreName(xw.dpy, xw.win, strescseq.buf+1);
-			break;
-		case '4': /* TODO: Set color (arg0) to "rgb:%hexr/$hexg/$hexb" (arg1) */
 			break;
 		default:
 			fprintf(stderr, "erresc: unknown str ");
@@ -1891,7 +1902,7 @@ strhandle(void) {
 		}
 		break;
 	case 'k': /* old title set compatibility */
-		XStoreName(xw.dpy, xw.win, strescseq.buf);
+		xsettitle(strescseq.args[0]);
 		break;
 	case 'P': /* DSC -- Device Control String */
 	case '_': /* APC -- Application Program Command */
@@ -1906,11 +1917,12 @@ strhandle(void) {
 
 void
 strparse(void) {
-	/*
-	 * TODO: Implement parsing like for CSI when required.
-	 * Format: ESC type cmd ';' arg0 [';' argn] ESC \
-	 */
-	return;
+	char *p = strescseq.buf;
+
+	strescseq.narg = 0;
+	strescseq.buf[strescseq.len] = '\0';
+	while(p && strescseq.narg < STR_ARG_SIZ)
+		strescseq.args[strescseq.narg++] = strsep(&p, ";");
 }
 
 void
@@ -1921,7 +1933,9 @@ strdump(void) {
 	printf("ESC%c", strescseq.type);
 	for(i = 0; i < strescseq.len; i++) {
 		c = strescseq.buf[i] & 0xff;
-		if(isprint(c)) {
+		if(c == '\0') {
+			return;
+		} else if(isprint(c)) {
 			putchar(c);
 		} else if(c == '\n') {
 			printf("(\\n)");
@@ -2009,7 +2023,7 @@ tputc(char *c, int len) {
 			strhandle();
 			break;
 		default:
-			if(strescseq.len + len < sizeof(strescseq.buf)) {
+			if(strescseq.len + len < sizeof(strescseq.buf) - 1) {
 				memmove(&strescseq.buf[strescseq.len], c, len);
 				strescseq.len += len;
 			} else {
@@ -2085,9 +2099,11 @@ tputc(char *c, int len) {
 		if(term.esc & ESC_CSI) {
 			csiescseq.buf[csiescseq.len++] = ascii;
 			if(BETWEEN(ascii, 0x40, 0x7E)
-					|| csiescseq.len >= ESC_BUF_SIZ) {
+					|| csiescseq.len >= \
+					sizeof(csiescseq.buf)-1) {
 				term.esc = 0;
-				csiparse(), csihandle();
+				csiparse();
+				csihandle();
 			}
 		} else if(term.esc & ESC_STR_END) {
 			term.esc = 0;
@@ -2314,15 +2330,18 @@ xresize(int col, int row) {
 	xw.tw = MAX(1, col * xw.cw);
 	xw.th = MAX(1, row * xw.ch);
 
-	if(!usedbe) {
-		XFreePixmap(xw.dpy, xw.buf);
-		xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
-				DefaultDepth(xw.dpy, xw.scr));
-		XSetForeground(xw.dpy, dc.gc, dc.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg].pixel);
-		XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, xw.w, xw.h);
-	}
+	XFreePixmap(xw.dpy, xw.buf);
+	xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
+			DefaultDepth(xw.dpy, xw.scr));
+	XSetForeground(xw.dpy, dc.gc, dc.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg].pixel);
+	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, xw.w, xw.h);
 
 	XftDrawChange(xw.draw, xw.buf);
+}
+
+static inline ushort
+sixd_to_16bit(int x) {
+	return x == 0 ? 0 : 0x3737 + 0x2828 * x;
 }
 
 void
@@ -2343,9 +2362,9 @@ xloadcols(void) {
 	for(i = 16, r = 0; r < 6; r++) {
 		for(g = 0; g < 6; g++) {
 			for(b = 0; b < 6; b++) {
-				color.red = r == 0 ? 0 : 0x3737 + 0x2828 * r;
-				color.green = g == 0 ? 0 : 0x3737 + 0x2828 * g;
-				color.blue = b == 0 ? 0 : 0x3737 + 0x2828 * b;
+				color.red = sixd_to_16bit(r);
+				color.green = sixd_to_16bit(g);
+				color.blue = sixd_to_16bit(b);
 				if(!XftColorAllocValue(xw.dpy, xw.vis, xw.cmap, &color, &dc.col[i])) {
 					die("Could not allocate color %d\n", i);
 				}
@@ -2361,6 +2380,38 @@ xloadcols(void) {
 			die("Could not allocate color %d\n", i);
 		}
 	}
+}
+
+int
+xsetcolorname(int x, const char *name) {
+	XRenderColor color = { .alpha = 0xffff };
+	Colour colour;
+	if (x < 0 || x > LEN(colorname))
+		return -1;
+	if(!name) {
+		if(16 <= x && x < 16 + 216) {
+			int r = (x - 16) / 36, g = ((x - 16) % 36) / 6, b = (x - 16) % 6;
+			color.red = sixd_to_16bit(r);
+			color.green = sixd_to_16bit(g);
+			color.blue = sixd_to_16bit(b);
+			if(!XftColorAllocValue(xw.dpy, xw.vis, xw.cmap, &color, &colour))
+				return 0; /* something went wrong */
+			dc.col[x] = colour;
+			return 1;
+		} else if (16 + 216 <= x && x < 256) {
+			color.red = color.green = color.blue = 0x0808 + 0x0a0a * (x - (16 + 216));
+			if(!XftColorAllocValue(xw.dpy, xw.vis, xw.cmap, &color, &colour))
+				return 0; /* something went wrong */
+			dc.col[x] = colour;
+			return 1;
+		} else {
+			name = colorname[x];
+		}
+	}
+	if(!XftColorAllocName(xw.dpy, xw.vis, xw.cmap, name, &colour))
+		return 0;
+	dc.col[x] = colour;
+	return 1;
 }
 
 void
@@ -2434,7 +2485,7 @@ xloadfont(Font *f, FcPattern *pattern) {
 	f->lbearing = 0;
 	f->rbearing = f->match->max_advance_width;
 
-	f->height = f->match->height;
+	f->height = f->ascent + f->descent;
 	f->width = f->lbearing + f->rbearing;
 
 	return 0;
@@ -2545,7 +2596,7 @@ xinit(void) {
 	XGCValues gcvalues;
 	Cursor cursor;
 	Window parent;
-	int sw, sh, major, minor;
+	int sw, sh;
 
 	if(!(xw.dpy = XOpenDisplay(NULL)))
 		die("Can't open display\n");
@@ -2600,26 +2651,14 @@ xinit(void) {
 			| CWColormap,
 			&attrs);
 
-	/* double buffering */
-	/*
-	if(XdbeQueryExtension(xw.dpy, &major, &minor)) {
-		xw.buf = XdbeAllocateBackBufferName(xw.dpy, xw.win,
-				XdbeBackground);
-		usedbe = True;
-	} else {
-	*/
-		memset(&gcvalues, 0, sizeof(gcvalues));
-		gcvalues.graphics_exposures = False;
-		dc.gc = XCreateGC(xw.dpy, parent, GCGraphicsExposures,
-				&gcvalues);
-		xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
-				DefaultDepth(xw.dpy, xw.scr));
-		XSetForeground(xw.dpy, dc.gc, dc.col[defaultbg].pixel);
-		XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, xw.w, xw.h);
-		//xw.buf = xw.win;
-	/*
-	}
-	*/
+	memset(&gcvalues, 0, sizeof(gcvalues));
+	gcvalues.graphics_exposures = False;
+	dc.gc = XCreateGC(xw.dpy, parent, GCGraphicsExposures,
+			&gcvalues);
+	xw.buf = XCreatePixmap(xw.dpy, xw.win, xw.w, xw.h,
+			DefaultDepth(xw.dpy, xw.scr));
+	XSetForeground(xw.dpy, dc.gc, dc.col[defaultbg].pixel);
+	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, xw.w, xw.h);
 
 	/* Xft rendering context */
 	xw.draw = XftDrawCreate(xw.dpy, xw.buf, xw.vis, xw.cmap);
@@ -2672,11 +2711,27 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 	FcPattern *fcpattern, *fontpattern;
 	FcFontSet *fcsets[] = { NULL };
 	FcCharSet *fccharset;
-	Colour *fg = &dc.col[base.fg], *bg = &dc.col[base.bg],
-		 *temp, revfg, revbg;
+	Colour *fg, *bg, *temp, revfg, revbg;
 	XRenderColor colfg, colbg;
 
 	frcflags = FRC_NORMAL;
+
+	if(base.mode & ATTR_ITALIC) {
+		if(base.fg == defaultfg)
+			base.fg = defaultitalic;
+		font = &dc.ifont;
+		frcflags = FRC_ITALIC;
+	} else if((base.mode & ATTR_ITALIC) && (base.mode & ATTR_BOLD)) {
+		if(base.fg == defaultfg)
+			base.fg = defaultitalic;
+		font = &dc.ibfont;
+		frcflags = FRC_ITALICBOLD;
+	} else if(base.mode & ATTR_UNDERLINE) {
+		if(base.fg == defaultfg)
+			base.fg = defaultunderline;
+	}
+	fg = &dc.col[base.fg];
+	bg = &dc.col[base.bg];
 
 	if(base.mode & ATTR_BOLD) {
 		if(BETWEEN(base.fg, 0, 7)) {
@@ -2697,15 +2752,6 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 		 */
 		font = &dc.bfont;
 		frcflags = FRC_BOLD;
-	}
-
-	if(base.mode & ATTR_ITALIC) {
-		font = &dc.ifont;
-		frcflags = FRC_ITALIC;
-	}
-	if((base.mode & ATTR_ITALIC) && (base.mode & ATTR_BOLD)) {
-		font = &dc.ibfont;
-		frcflags = FRC_ITALICBOLD;
 	}
 
 	if(IS_SET(MODE_REVERSE)) {
@@ -2834,8 +2880,7 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 					FcTrue, fcpattern, &fcres);
 
 			/*
-			 * Overwrite or create the new cache entry
-			 * entry.
+			 * Overwrite or create the new cache entry.
 			 */
 			frccur++;
 			frclen++;
@@ -2910,9 +2955,19 @@ xdrawcursor(void) {
 	}
 }
 
+
+void
+xsettitle(char *p) {
+	XTextProperty prop;
+
+	Xutf8TextListToTextProperty(xw.dpy, &p, 1, XUTF8StringStyle,
+			&prop);
+	XSetWMName(xw.dpy, xw.win, &prop);
+}
+
 void
 xresettitle(void) {
-	XStoreName(xw.dpy, xw.win, opt_title ? opt_title : "st");
+	xsettitle(opt_title ? opt_title : "st");
 }
 
 void
@@ -2930,16 +2985,12 @@ redraw(int timeout) {
 
 void
 draw(void) {
-	XdbeSwapInfo swpinfo[1] = {{xw.win, XdbeCopied}};
-
 	drawregion(0, 0, term.col, term.row);
-	if(usedbe) {
-		XdbeSwapBuffers(xw.dpy, swpinfo, 1);
-	} else {
-		XCopyArea(xw.dpy, xw.buf, xw.win, dc.gc, 0, 0, xw.w,
-				xw.h, 0, 0);
-		XSetForeground(xw.dpy, dc.gc, dc.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg].pixel);
-	}
+	XCopyArea(xw.dpy, xw.buf, xw.win, dc.gc, 0, 0, xw.w,
+			xw.h, 0, 0);
+	XSetForeground(xw.dpy, dc.gc,
+			dc.col[IS_SET(MODE_REVERSE)?
+				defaultfg : defaultbg].pixel);
 }
 
 void
