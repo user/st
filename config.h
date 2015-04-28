@@ -8,10 +8,15 @@
 static char font[] = "Ubuntu Mono:pixelsize=14";
 static int borderpx = 2;
 static char shell[] = "/bin/zsh";
+static char *utmp = NULL;
+static char stty_args[] = "stty raw -echo -iexten echonl";
 
-/* Kerning / character bounding-box mutlipliers */
-float cwscale = 1.0;
-float chscale = 1.0;
+/* identification sequence returned in DA and DECID */
+static char vtiden[] = "\033[?6c";
+
+/* Kerning / character bounding-box multipliers */
+static float cwscale = 1.0;
+static float chscale = 1.0;
 
 /*
  * word delimiter string
@@ -36,6 +41,11 @@ static unsigned int actionfps = 30;
  * attribute.
  */
 static unsigned int blinktimeout = 800;
+
+/*
+ * thickness of underline and bar cursors
+ */
+static unsigned int cursorthickness = 2;
 
 /*
  * bell volume. It must be a value between -100 and 100. Use 0 for disabling
@@ -99,21 +109,27 @@ static unsigned int defaultunderline = 7;
 /* Internal mouse shortcuts. */
 /* Beware that overloading Button1 will disable the selection. */
 static Mousekey mshortcuts[] = {
-	/* keysym		mask		string */
-	{ Button4,		XK_ANY_MOD,	"\031"},
-	{ Button5,		XK_ANY_MOD,	"\005"},
+	/* button               mask            string */
+	{ Button4,              XK_ANY_MOD,     "\031" },
+	{ Button5,              XK_ANY_MOD,     "\005" },
 };
 
 /* Internal keyboard shortcuts. */
 #define MODKEY Mod1Mask
 
 static Shortcut shortcuts[] = {
-	/* modifier		key		function	argument */
-	{ MODKEY|ShiftMask,	XK_Prior,	xzoom,		{.i = +1} },
-	{ MODKEY|ShiftMask,	XK_Next,	xzoom,		{.i = -1} },
-	{ ShiftMask,		XK_Insert,	selpaste,	{.i =  0} },
-	{ MODKEY|ShiftMask,	XK_Insert,	clippaste,	{.i =  0} },
-	{ MODKEY,		XK_Num_Lock,	numlock,	{.i =  0} },
+	/* mask                 keysym          function        argument */
+	{ ControlMask,          XK_Print,       toggleprinter,  {.i =  0} },
+	{ ShiftMask,            XK_Print,       printscreen,    {.i =  0} },
+	{ XK_ANY_MOD,           XK_Print,       printsel,       {.i =  0} },
+	{ MODKEY|ShiftMask,     XK_Prior,       xzoom,          {.i = +1} },
+	{ MODKEY|ShiftMask,     XK_Next,        xzoom,          {.i = -1} },
+	{ MODKEY|ShiftMask,     XK_Home,        xzoomreset,     {.i =  0} },
+	{ ShiftMask,            XK_Insert,      selpaste,       {.i =  0} },
+	{ MODKEY|ShiftMask,     XK_Insert,      clippaste,      {.i =  0} },
+	{ MODKEY|ShiftMask,     XK_C,           clipcopy,       {.i =  0} },
+	{ MODKEY|ShiftMask,     XK_V,           clippaste,      {.i =  0} },
+	{ MODKEY,               XK_Num_Lock,    numlock,        {.i =  0} },
 };
 
 /*
@@ -122,12 +138,12 @@ static Shortcut shortcuts[] = {
  * Mask value:
  * * Use XK_ANY_MOD to match the key no matter modifiers state
  * * Use XK_NO_MOD to match the key alone (no modifiers)
- * keypad value:
+ * appkey value:
  * * 0: no value
  * * > 0: keypad application mode enabled
  * *   = 2: term.numlock = 1
  * * < 0: keypad application mode disabled
- * cursor value:
+ * appcursor value:
  * * 0: no value
  * * > 0: cursor application mode enabled
  * * < 0: cursor application mode disabled
@@ -136,7 +152,7 @@ static Shortcut shortcuts[] = {
  * * > 0: crlf mode is enabled
  * * < 0: crlf mode is disabled
  *
- * Be careful with the order of the definitons because st searchs in
+ * Be careful with the order of the definitions because st searches in
  * this table sequentially, so any XK_ANY_MOD must be in the last
  * position for a key.
  */
@@ -148,15 +164,20 @@ static Shortcut shortcuts[] = {
 static KeySym mappedkeys[] = { -1 };
 
 /*
- * Which bits of the state should be ignored. By default the state bit for the
- * keyboard layout (XK_SWITCH_MOD) is ignored.
+ * State bits to ignore when matching key or button events.  By default,
+ * numlock (Mod2Mask) and keyboard layout (XK_SWITCH_MOD) are ignored.
  */
-uint ignoremod = XK_SWITCH_MOD;
+static uint ignoremod = Mod2Mask|XK_SWITCH_MOD;
 
-/* key, mask, output, keypad, cursor, crlf */
+/* Override mouse-select while mask is active (when MODE_MOUSE is set).
+ * Note that if you want to use ShiftMask with selmasks, set this to an other
+ * modifier, set to 0 to not use it. */
+static uint forceselmod = ShiftMask;
+
 static Key key[] = {
-	/* keysym             mask         string         keypad cursor crlf */
-	{ XK_KP_Home,       ShiftMask,      "\033[1;2H",     0,    0,    0},
+	/* keysym           mask            string      appkey appcursor crlf */
+	{ XK_KP_Home,       ShiftMask,      "\033[2J",       0,   -1,    0},
+	{ XK_KP_Home,       ShiftMask,      "\033[1;2H",     0,   +1,    0},
 	{ XK_KP_Home,       XK_ANY_MOD,     "\033[H",        0,   -1,    0},
 	{ XK_KP_Home,       XK_ANY_MOD,     "\033[1~",       0,   +1,    0},
 	{ XK_KP_Up,         XK_ANY_MOD,     "\033Ox",       +1,    0,    0},
@@ -187,10 +208,10 @@ static Key key[] = {
 	{ XK_KP_Insert,     ControlMask,    "\033[2;5~",    +1,    0,    0},
 	{ XK_KP_Insert,     XK_ANY_MOD,     "\033[4h",      -1,    0,    0},
 	{ XK_KP_Insert,     XK_ANY_MOD,     "\033[2~",      +1,    0,    0},
-	{ XK_KP_Delete,     ControlMask,    "\033[2J",      -1,    0,    0},
+	{ XK_KP_Delete,     ControlMask,    "\033[M",       -1,    0,    0},
 	{ XK_KP_Delete,     ControlMask,    "\033[3;5~",    +1,    0,    0},
-	{ XK_KP_Delete,     ShiftMask,      "\033[2K",      +1,    0,    0},
-	{ XK_KP_Delete,     ShiftMask,      "\033[3;2~",    -1,    0,    0},
+	{ XK_KP_Delete,     ShiftMask,      "\033[2K",      -1,    0,    0},
+	{ XK_KP_Delete,     ShiftMask,      "\033[3;2~",    +1,    0,    0},
 	{ XK_KP_Delete,     XK_ANY_MOD,     "\033[P",       -1,    0,    0},
 	{ XK_KP_Delete,     XK_ANY_MOD,     "\033[3~",      +1,    0,    0},
 	{ XK_KP_Multiply,   XK_ANY_MOD,     "\033Oj",       +2,    0,    0},
@@ -211,7 +232,6 @@ static Key key[] = {
 	{ XK_KP_7,          XK_ANY_MOD,     "\033Ow",       +2,    0,    0},
 	{ XK_KP_8,          XK_ANY_MOD,     "\033Ox",       +2,    0,    0},
 	{ XK_KP_9,          XK_ANY_MOD,     "\033Oy",       +2,    0,    0},
-	{ XK_BackSpace,     XK_NO_MOD,      "\177",          0,    0,    0},
 	{ XK_Up,            ShiftMask,      "\033[1;2A",     0,    0,    0},
 	{ XK_Up,            ControlMask,    "\033[1;5A",     0,    0,    0},
 	{ XK_Up,            Mod1Mask,       "\033[1;3A",     0,    0,    0},
@@ -243,13 +263,15 @@ static Key key[] = {
 	{ XK_Insert,        ControlMask,    "\033[2;5~",    +1,    0,    0},
 	{ XK_Insert,        XK_ANY_MOD,     "\033[4h",      -1,    0,    0},
 	{ XK_Insert,        XK_ANY_MOD,     "\033[2~",      +1,    0,    0},
-	{ XK_Delete,        ControlMask,    "\033[2J",      -1,    0,    0},
+	{ XK_Delete,        ControlMask,    "\033[M",       -1,    0,    0},
 	{ XK_Delete,        ControlMask,    "\033[3;5~",    +1,    0,    0},
-	{ XK_Delete,        ShiftMask,      "\033[2K",      +1,    0,    0},
-	{ XK_Delete,        ShiftMask,      "\033[3;2~",    -1,    0,    0},
+	{ XK_Delete,        ShiftMask,      "\033[2K",      -1,    0,    0},
+	{ XK_Delete,        ShiftMask,      "\033[3;2~",    +1,    0,    0},
 	{ XK_Delete,        XK_ANY_MOD,     "\033[P",       -1,    0,    0},
 	{ XK_Delete,        XK_ANY_MOD,     "\033[3~",      +1,    0,    0},
-	{ XK_Home,          ShiftMask,      "\033[1;2H",     0,    0,    0},
+	{ XK_BackSpace,     XK_NO_MOD,      "\177",          0,    0,    0},
+	{ XK_Home,          ShiftMask,      "\033[2J",       0,   -1,    0},
+	{ XK_Home,          ShiftMask,      "\033[1;2H",     0,   +1,    0},
 	{ XK_Home,          XK_ANY_MOD,     "\033[H",        0,   -1,    0},
 	{ XK_Home,          XK_ANY_MOD,     "\033[1~",       0,   +1,    0},
 	{ XK_End,           ControlMask,    "\033[J",       -1,    0,    0},
@@ -283,7 +305,7 @@ static Key key[] = {
 	{ XK_F3, /* F63 */  Mod3Mask,       "\033[1;4R",     0,    0,    0},
 	{ XK_F4,            XK_NO_MOD,      "\033OS" ,       0,    0,    0},
 	{ XK_F4, /* F16 */  ShiftMask,      "\033[1;2S",     0,    0,    0},
-	{ XK_F4, /* F28 */  ShiftMask,      "\033[1;5S",     0,    0,    0},
+	{ XK_F4, /* F28 */  ControlMask,    "\033[1;5S",     0,    0,    0},
 	{ XK_F4, /* F40 */  Mod4Mask,       "\033[1;6S",     0,    0,    0},
 	{ XK_F4, /* F52 */  Mod1Mask,       "\033[1;3S",     0,    0,    0},
 	{ XK_F5,            XK_NO_MOD,      "\033[15~",      0,    0,    0},
@@ -358,7 +380,6 @@ static Key key[] = {
  * ButtonRelease and MotionNotify.
  * If no match is found, regular selection is used.
  */
-
 static uint selmasks[] = {
 	[SEL_RECTANGULAR] = Mod1Mask,
 };
