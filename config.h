@@ -5,7 +5,8 @@
  *
  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
  */
-static char font[] = "Ubuntu Mono:pixelsize=14";
+// static char font[] = "Ubuntu Mono:pixelsize=14";
+static char font[] = "Terminus:pixelsize=10";
 static int borderpx = 2;
 static char shell[] = "/bin/zsh";
 static char *utmp = NULL;
