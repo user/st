@@ -5,7 +5,7 @@
  *
  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
  */
-static char font[] = "Terminus:pixelsize=10";
+static char font[] = "terminus:pixelsize=10:antialias=true:autohint=true";
 static int borderpx = 2;
 static char shell[] = "/bin/zsh";
 static char *utmp = NULL;
@@ -62,14 +62,14 @@ static unsigned int tabspaces = 8;
 /* Terminal colors (16 first used in escape sequence) */
 static const char *colorname[] = {
 	/* 8 normal colors */
-	"#2E3436",
-	"#CC0000",
-	"#73D216",
-	"#EDD400",
-	"#3465A4",
-	"#75507B",
-	"cyan3",
-	"gray90",
+	"#2E3436", /* black   */
+	"#CC0000", /* red     */
+	"#73D216", /* green   */
+	"#EDD400", /* yellow  */
+	"#3465A4", /* blue    */
+	"#75507B", /* magenta */
+	"cyan3",   /* cyan    */
+	"gray90",  /* gray    */
 
 	/* 8 bright colors */
 	"#888A85",
