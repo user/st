@@ -96,18 +96,18 @@ use a tty
 .I line
 instead of a pseudo terminal.
 .I line
-should be a (pseudo-)serial device (e.g. /dev/ttySO on Linux for serial port
+should be a (pseudo-)serial device (e.g. /dev/ttyS0 on Linux for serial port
 0).
 When this flag is given
 remaining arguments are used as flags for
 .BR stty(1).
 By default st initializes the serial line to 8 bits, no parity, 1 stop bit
 and a 38400 baud rate. The speed is set by appending it as last argument
-(e.g. 'st -l 115200'). Arguments before the last one are
+(e.g. 'st -l /dev/ttyS0 115200'). Arguments before the last one are
 .BR stty(1)
 flags. If you want to set odd parity on 115200 baud use for example 'st -l
-parenb parodd 115200'. Set the number of bits by using for example 'st -l cs7
-115200'. See
+/dev/ttyS0 parenb parodd 115200'. Set the number of bits by using for
+example 'st -l /dev/ttyS0 cs7 115200'. See
 .BR stty(1)
 for more arguments and cases.
 .TP
@@ -120,7 +120,7 @@ st executes
 instead of the shell.  If this is used it
 .B must be the last option
 on the command line, as in xterm / rxvt.
-This option is only intended for compability,
+This option is only intended for compatibility,
 and all the remaining arguments are used as a command
 even without it.
 .SH SHORTCUTS
@@ -142,26 +142,27 @@ Print the full screen to the
 Print the selection to the
 .I iofile.
 .TP
-.B Alt-Shift-Page Up
+.B Ctrl-Shift-Page Up
 Increase font size.
 .TP
-.B Alt-Shift-Page Down
+.B Ctrl-Shift-Page Down
 Decrease font size.
 .TP
-.B Alt-Shift-Home
+.B Ctrl-Shift-Home
 Reset to default font size.
 .TP
-.B Shift-Insert
+.B Ctrl-Shift-y
 Paste from primary selection (middle mouse button).
 .TP
-.B Alt-Shift-Insert
-Paste from clipboard selection.
-.TP
-.B Alt-Shift-c
+.B Ctrl-Shift-c
 Copy the selected text to the clipboard selection.
 .TP
-.B Alt-Shift-v
+.B Ctrl-Shift-v
 Paste from the clipboard selection.
+.TP
+.B Ctrl-Shift-i
+Launch dmenu to enter a unicode codepoint and send the corresponding glyph
+to st.
 .SH CUSTOMIZATION
 .B st
 can be customized by creating a custom config.h and (re)compiling the source
